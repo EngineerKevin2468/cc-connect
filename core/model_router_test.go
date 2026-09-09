@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,32 @@ func TestClassifyMessage_Rules(t *testing.T) {
 		if res.Elapsed <= 0 {
 			t.Errorf("%s: elapsed not recorded", c.name)
 		}
+	}
+}
+
+func TestClassifyMessage_ReasonDisclosesKeywordAndLength(t *testing.T) {
+	cfg := routerCfg(t)
+	cases := []struct {
+		name   string
+		text   string
+		substr string // Reason 应包含的子串
+	}{
+		{"complex keyword 披露关键词", "帮我排查一下这个告警的根因", "「根因」"},
+		{"simple keyword 披露关键词", "查券", "「查券」"},
+	}
+	for _, c := range cases {
+		res := ClassifyMessage(context.Background(), c.text, false, cfg)
+		if !strings.Contains(res.Reason, c.substr) {
+			t.Errorf("%s: Reason=%q, want contains %q", c.name, res.Reason, c.substr)
+		}
+	}
+
+	// 长度阈值命中时披露实际字数
+	longText := strings.Repeat("这是一个很长的消息", 100)
+	res := ClassifyMessage(context.Background(), longText, false, cfg)
+	wantLen := fmt.Sprintf("（%d字）", len([]rune(longText)))
+	if !strings.Contains(res.Reason, wantLen) {
+		t.Errorf("length: Reason=%q, want contains %q", res.Reason, wantLen)
 	}
 }
 

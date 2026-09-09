@@ -205,17 +205,17 @@ func ClassifyMessage(ctx context.Context, text string, multimodal bool, cfg Mode
 	reason := ""
 	llmFailed := false
 	// 1. 复杂关键词
-	if containsAny(text, complexKws) {
+	if kw := matchKeyword(text, complexKws); kw != "" {
 		tier = "complex"
-		reason = "命中复杂语义关键词"
+		reason = fmt.Sprintf("命中复杂语义关键词「%s」", kw)
 	} else if minLen > 0 && len([]rune(text)) >= minLen {
 		// 2. 长度阈值
 		tier = "complex"
-		reason = "消息长度超阈值"
-	} else if containsAny(text, simpleKws) {
+		reason = fmt.Sprintf("消息长度超阈值（%d字）", len([]rune(text)))
+	} else if kw := matchKeyword(text, simpleKws); kw != "" {
 		// 3. 简单关键词
 		tier = "simple"
-		reason = "命中简单语义关键词"
+		reason = fmt.Sprintf("命中简单语义关键词「%s」", kw)
 	} else if cfg.UseLLMClassify && classifyCred.Model != "" {
 		// 4. LLM 兜底
 		if t, ok := classifyViaLLM(ctx, text, classifyCred, cfg.ClassifyPrompt, complexKws, simpleKws); ok {
@@ -255,16 +255,17 @@ func ClassifyMessage(ctx context.Context, text string, multimodal bool, cfg Mode
 	return res
 }
 
-func containsAny(text string, keywords []string) bool {
+// matchKeyword 返回 text 命中的第一个关键词，未命中返回空串。
+func matchKeyword(text string, keywords []string) string {
 	for _, kw := range keywords {
 		if kw == "" {
 			continue
 		}
 		if strings.Contains(text, kw) {
-			return true
+			return kw
 		}
 	}
-	return false
+	return ""
 }
 
 // classifyViaLLM 用指定凭证的 anthropic 兼容端点做一次轻量分类。
