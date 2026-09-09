@@ -3508,6 +3508,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var partialText string
 	triggerAutoCompress := false
 	pendingSend := sendDone
+	var stopLoading func() // stops the pre-output loading animation; nil until started
 
 	// stopTyping tracks the current turn's typing indicator so it can be
 	// stopped when a queued message starts a new turn.
@@ -3516,6 +3517,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	// Set during EventResult handling for multi-round quiet turns.
 	var doneReaction func()
 	defer func() {
+		if stopLoading != nil {
+			stopLoading()
+		}
 		if stopTyping != nil {
 			stopTyping()
 		}
@@ -3557,6 +3561,26 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	sp := newStreamPreview(e.streamPreview, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
 	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
 	state.mu.Unlock()
+
+	// Pre-start a loading animation card (reusing sp's preview stream) to fill
+	// the gap between "message received" and the first real output. Only start
+	// it when sp is the sole content channel:
+	//   - rich card mode (card_mode=rich) drives its own card → skip.
+	//   - compact/card progress style with visible thinking/tool already posts
+	//     a progress card via cp → skip (that card is the "processing" signal).
+	shouldStartLoading := e.display.CardMode != "rich"
+	if shouldStartLoading {
+		if style := progressStyleForTarget(state.platform, state.replyCtx); style == progressStyleCompact || style == progressStyleCard {
+			if e.display.ThinkingMessages || e.display.ToolMessages {
+				shouldStartLoading = false
+			}
+		}
+	}
+	if shouldStartLoading {
+		stopLoading = sp.startLoading(func(frame int) string {
+			return loadingSpinnerFrames[frame%len(loadingSpinnerFrames)] + " " + e.i18n.T(MsgLoading)
+		}, loadingFrameInterval)
+	}
 
 	// Send instant confirmation reply if enabled and no streaming card is active.
 	// Streaming cards provide their own "processing" indicator, so instant reply
@@ -3654,6 +3678,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			firstEventLogged = true
 			if elapsed := time.Since(waitStart); elapsed >= slowAgentFirstEvent {
 				slog.Warn("slow agent first event", "elapsed", elapsed, "session", sessionKey, "event_type", event.Type)
+			}
+		}
+
+		// First real content event arrives — stop the loading animation and let
+		// real content take over the card in-place.
+		if stopLoading != nil {
+			switch event.Type {
+			case EventText, EventThinking, EventToolUse, EventToolResult:
+				stopLoading()
+				stopLoading = nil
 			}
 		}
 

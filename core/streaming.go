@@ -461,3 +461,121 @@ func (sp *streamPreview) needsDoneReaction() bool {
 	defer sp.mu.Unlock()
 	return sp.previewMsgID != nil && sp.lastSentViaUpdate
 }
+
+// loadingSpinnerFrames is the braille spinner animation frame sequence used
+// by the pre-output loading card. Feishu cards are rendered statically, so
+// the only way to animate is to rotate frames via periodic PATCH updates.
+var loadingSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// loadingFrameInterval is the default delay between loading animation frames.
+const loadingFrameInterval = 900 * time.Millisecond
+
+// startLoading immediately sends a loading card and starts rotating animation
+// frames on it until stop is called. It reuses sp.previewMsgID so that the
+// first real content flush (appendText) updates this same card in-place —
+// no leftover message, seamless handoff to real content.
+//
+// frameText returns the full text content for a given frame index (spinner +
+// label). The returned stop function is idempotent; calling it stops the
+// animation goroutine but keeps the card visible for real content to take over.
+// The animation goroutine also self-terminates on degrade/discard/ctx cancel.
+func (sp *streamPreview) startLoading(frameText func(frame int) string, interval time.Duration) (stop func()) {
+	if interval <= 0 {
+		interval = loadingFrameInterval
+	}
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	stop = func() { stopOnce.Do(func() { close(stopCh) }) }
+
+	sp.mu.Lock()
+	if sp.degraded || !sp.cfg.Enabled {
+		sp.mu.Unlock()
+		stop()
+		return stop
+	}
+	if _, ok := sp.platform.(MessageUpdater); !ok {
+		slog.Debug("stream preview: loading needs MessageUpdater, degrading")
+		sp.degraded = true
+		sp.mu.Unlock()
+		stop()
+		return stop
+	}
+	first := frameText(0)
+	if sp.transform != nil {
+		first = sp.transform(first)
+	}
+	if sp.previewMsgID == nil {
+		if starter, ok := sp.platform.(PreviewStarter); ok {
+			handle, err := starter.SendPreviewStart(sp.ctx, sp.replyCtx, first)
+			if err != nil {
+				slog.Debug("stream preview: loading start failed, degrading", "error", err)
+				sp.degraded = true
+				sp.mu.Unlock()
+				stop()
+				return stop
+			}
+			sp.previewMsgID = handle
+		} else {
+			if err := sp.platform.Send(sp.ctx, sp.replyCtx, first); err != nil {
+				slog.Debug("stream preview: loading send failed, degrading", "error", err)
+				sp.degraded = true
+				sp.mu.Unlock()
+				stop()
+				return stop
+			}
+			sp.previewMsgID = sp.replyCtx
+		}
+	}
+	sp.lastSentText = first
+	sp.lastSentViaUpdate = false
+	sp.lastSentAt = time.Now()
+	sp.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		frame := 1
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-sp.ctx.Done():
+				return
+			case <-ticker.C:
+				sp.mu.Lock()
+				if sp.degraded || sp.previewMsgID == nil {
+					sp.mu.Unlock()
+					return
+				}
+				text := frameText(frame)
+				if sp.transform != nil {
+					text = sp.transform(text)
+				}
+				updater, ok := sp.platform.(MessageUpdater)
+				if !ok {
+					sp.degraded = true
+					sp.mu.Unlock()
+					return
+				}
+				msgID := sp.previewMsgID
+				sp.mu.Unlock()
+
+				if err := updater.UpdateMessage(sp.ctx, msgID, text); err != nil {
+					sp.mu.Lock()
+					slog.Debug("stream preview: loading frame update failed, degrading", "error", err)
+					sp.degraded = true
+					sp.mu.Unlock()
+					return
+				}
+				sp.mu.Lock()
+				sp.lastSentText = text
+				sp.lastSentViaUpdate = true
+				sp.lastSentAt = time.Now()
+				sp.mu.Unlock()
+				frame++
+			}
+		}
+	}()
+
+	return stop
+}

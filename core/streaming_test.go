@@ -397,3 +397,76 @@ func TestStreamPreview_AppliesTransform(t *testing.T) {
 		t.Fatalf("final message = %q, want transformed final preview", got)
 	}
 }
+
+func TestStreamPreview_StartLoading(t *testing.T) {
+	mp := &mockUpdaterPlatform{}
+	cfg := StreamPreviewCfg{
+		Enabled:       true,
+		IntervalMs:    50,
+		MinDeltaChars: 1,
+		MaxChars:      500,
+	}
+
+	sp := newStreamPreview(cfg, mp, "ctx", context.Background(), nil)
+
+	frameText := func(frame int) string {
+		return loadingSpinnerFrames[frame%len(loadingSpinnerFrames)] + " loading"
+	}
+
+	stop := sp.startLoading(frameText, 30*time.Millisecond)
+
+	// First frame is sent synchronously via SendPreviewStart.
+	time.Sleep(10 * time.Millisecond)
+	msgs := mp.getMessages()
+	if len(msgs) == 0 {
+		t.Fatal("expected first loading frame sent")
+	}
+	if msgs[0] != "start:⠋ loading" {
+		t.Fatalf("first = %q, want 'start:⠋ loading'", msgs[0])
+	}
+
+	// Animation frames rotate via UpdateMessage.
+	time.Sleep(150 * time.Millisecond)
+	stop()
+
+	msgs = mp.getMessages()
+	if len(msgs) < 2 {
+		t.Fatalf("expected start + at least one animated update, got %d: %v", len(msgs), msgs)
+	}
+	if !strings.HasPrefix(msgs[1], "update:") {
+		t.Fatalf("second message = %q, want update:", msgs[1])
+	}
+
+	// After stop, no further animation frames should be sent.
+	countAfterStop := len(mp.getMessages())
+	time.Sleep(120 * time.Millisecond)
+	if got := len(mp.getMessages()); got != countAfterStop {
+		t.Fatalf("expected no frames after stop, before=%d after=%d", countAfterStop, got)
+	}
+
+	// appendText must reuse the loading card in-place (UpdateMessage, not SendPreviewStart).
+	sp.appendText("real content")
+	time.Sleep(200 * time.Millisecond)
+	foundUpdateReal := false
+	for _, m := range mp.getMessages() {
+		if strings.HasPrefix(m, "update:") && strings.Contains(m, "real content") {
+			foundUpdateReal = true
+		}
+	}
+	if !foundUpdateReal {
+		t.Fatalf("expected appendText to update in-place after loading, got %v", mp.getMessages())
+	}
+}
+
+func TestStreamPreview_StartLoadingDisabled(t *testing.T) {
+	mp := &mockUpdaterPlatform{}
+	cfg := StreamPreviewCfg{Enabled: false}
+
+	sp := newStreamPreview(cfg, mp, "ctx", context.Background(), nil)
+	stop := sp.startLoading(func(frame int) string { return "x" }, 10*time.Millisecond)
+	stop()
+
+	if len(mp.getMessages()) != 0 {
+		t.Fatalf("expected no messages when preview disabled, got %v", mp.getMessages())
+	}
+}

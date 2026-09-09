@@ -160,6 +160,7 @@ type MsgKey string
 
 const (
 	MsgStarting                  MsgKey = "starting"
+	MsgLoading                   MsgKey = "loading"
 	MsgThinking                  MsgKey = "thinking"
 	MsgTool                      MsgKey = "tool"
 	MsgToolResult                MsgKey = "tool_result"
@@ -626,6 +627,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⏳ 處理中...",
 		LangJapanese:           "⏳ 処理中...",
 		LangSpanish:            "⏳ Procesando...",
+	},
+	MsgLoading: {
+		LangEnglish:            "Thinking...",
+		LangChinese:            "正在思考...",
+		LangTraditionalChinese: "正在思考...",
+		LangJapanese:           "考え中...",
+		LangSpanish:            "Pensando...",
 	},
 	MsgThinking: {
 		LangEnglish: "💭 %s",
